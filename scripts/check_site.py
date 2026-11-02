@@ -7,7 +7,10 @@ import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 EXPECTED_DOMAIN = "j8d.org"
-REQUIRED_LINKS = {"/nc-trout-stocking/", "https://github.com/j8d"}
+REQUIRED_LINKS = {"/nc-trout-stocking/", "/programmerhumor/", "https://github.com/j8d"}
+HUMOR_DIR = ROOT / "programmerhumor"
+# Uncompressed bytes of the page plus every local file it loads.
+HUMOR_BUDGET_BYTES = 150 * 1024
 
 
 class PageParser(HTMLParser):
@@ -47,6 +50,39 @@ class PageParser(HTMLParser):
             self.title += data
 
 
+def check_humor_page(errors):
+    """The /programmerhumor/ page may load its own files, but nothing from elsewhere."""
+    html_path = HUMOR_DIR / "index.html"
+    page = PageParser()
+    page.feed(html_path.read_text())
+    if page.lang != "en":
+        errors.append("programmerhumor: <html> needs lang=\"en\"")
+    if not page.title.strip():
+        errors.append("programmerhumor: <title> is empty")
+    if not page.viewport:
+        errors.append("programmerhumor: viewport meta tag is missing")
+    if page.h1_count != 1:
+        errors.append(f"programmerhumor: expected exactly one <h1>, found {page.h1_count}")
+    if "/" not in page.links:
+        errors.append("programmerhumor: missing link back to the directory (/)")
+
+    total = html_path.stat().st_size
+    for src in sorted(set(page.external_resources)):
+        if src.startswith("data:"):
+            continue  # inline, no request
+        if "//" in src or src.startswith("/"):
+            errors.append(f"programmerhumor: must only load files from its own folder: {src}")
+            continue
+        asset = HUMOR_DIR / src
+        if not asset.is_file():
+            errors.append(f"programmerhumor: missing file {src}")
+            continue
+        total += asset.stat().st_size
+    if total > HUMOR_BUDGET_BYTES:
+        errors.append(f"programmerhumor: {total} bytes is over the {HUMOR_BUDGET_BYTES} byte budget")
+    return total
+
+
 def main():
     errors = []
 
@@ -74,11 +110,14 @@ def main():
     if page.external_resources:
         errors.append(f"page must not load scripts, styles or media: {page.external_resources}")
 
+    humor_bytes = check_humor_page(errors)
+
     for error in errors:
         print(f"error: {error}")
     if errors:
         return 1
     print(f"ok: {len(page.links)} links, CNAME {cname}")
+    print(f"ok: programmerhumor weighs {humor_bytes} bytes (budget {HUMOR_BUDGET_BYTES})")
     return 0
 
 
